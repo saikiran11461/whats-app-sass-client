@@ -17,6 +17,15 @@ export interface Campaign {
   scheduledAt?: string;
   launchedAt?: string;
   completedAt?: string;
+  totalContacts?: number;
+  stats?: {
+    sent?: number;
+    delivered?: number;
+    read?: number;
+    failed?: number;
+    pending?: number;
+    replied?: number;
+  };
   createdAt: string;
   updatedAt: string;
 }

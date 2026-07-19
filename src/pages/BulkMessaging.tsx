@@ -3,17 +3,37 @@ import {
   Upload,
   FileSpreadsheet,
   Send,
-  Check,
   X,
-  Calendar,
   Filter,
   Loader2,
   Info,
+  Users,
+  Search,
+  Trash2,
 } from "lucide-react";
 import { useRef, useState } from "react";
-import { useCampaigns, useCreateCampaign, useLaunchCampaign, usePauseCampaign, useCancelCampaign, useImportContacts } from "@/hooks/useCampaigns";
+import {
+  useCampaigns,
+  useCreateCampaign,
+  useLaunchCampaign,
+  usePauseCampaign,
+  useCancelCampaign,
+  useDeleteCampaign,
+  useImportContacts,
+} from "@/hooks/useCampaigns";
 import { useTemplates } from "@/hooks/useTemplates";
+import { useContacts, type Contact } from "@/hooks/useContacts";
 import { toast } from "sonner";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const statusColors: Record<string, string> = {
   completed: "bg-primary/10 text-primary",
@@ -85,6 +105,10 @@ export default function BulkMessaging() {
   const [campaignFilter, setCampaignFilter] = useState("all");
   const [showFilters, setShowFilters] = useState(false);
   const [showFormat, setShowFormat] = useState(false);
+  const [contactMode, setContactMode] = useState<"csv" | "existing">("csv");
+  const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
+  const [contactSearch, setContactSearch] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { data: campaignsData, isLoading } = useCampaigns({
@@ -95,16 +119,34 @@ export default function BulkMessaging() {
   const { data: templatesData } = useTemplates();
   const templates = templatesData?.templates || [];
 
+  const { data: contactsData } = useContacts({ search: contactSearch || undefined, limit: 200 });
+  const contacts = contactsData?.contacts || [];
+
   const { mutate: createCampaign, isPending: creating } = useCreateCampaign();
   const { mutate: launchCampaign } = useLaunchCampaign();
   const { mutate: pauseCampaign } = usePauseCampaign();
   const { mutate: cancelCampaign } = useCancelCampaign();
+  const { mutate: deleteCampaign } = useDeleteCampaign();
   const importContacts = useImportContacts();
 
-  const filteredCampaigns =
-    campaignFilter === "all"
-      ? campaigns
-      : campaigns.filter((c) => c.status === campaignFilter);
+  const hasContacts = contactMode === "csv" ? parsedContacts.length > 0 : selectedContactIds.length > 0;
+
+  const switchMode = (mode: "csv" | "existing") => {
+    setContactMode(mode);
+    if (mode === "csv") {
+      setSelectedContactIds([]);
+    } else {
+      setFileName(null);
+      setParsedContacts([]);
+      setParseInfo(null);
+    }
+  };
+
+  const toggleContact = (id: string) => {
+    setSelectedContactIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -129,27 +171,47 @@ export default function BulkMessaging() {
     }
   };
 
+  const resetForm = () => {
+    setCampaignName("");
+    setSelectedTemplate("");
+    setFileName(null);
+    setParsedContacts([]);
+    setParseInfo(null);
+    setSelectedContactIds([]);
+    setContactSearch("");
+  };
+
   const handleCreateAndLaunch = async () => {
     if (!campaignName || !selectedTemplate) {
       toast.error("Campaign name and template are required");
       return;
     }
-    if (parsedContacts.length === 0) {
-      toast.error("Please upload a CSV contact list first");
+
+    const csvContacts = contactMode === "csv" ? parsedContacts : [];
+    const existingIds = contactMode === "existing" ? selectedContactIds : [];
+
+    if (csvContacts.length === 0 && existingIds.length === 0) {
+      toast.error(
+        contactMode === "csv"
+          ? "Please upload a CSV contact list first"
+          : "Please select at least one contact"
+      );
       return;
     }
 
     try {
-      // 1. Import the contacts (backend dedupes by phone)
-      const importRes = await importContacts.mutateAsync(parsedContacts);
-      const contactIds: string[] = importRes.data?.contactIds || [];
+      let contactIds: string[] = existingIds;
 
-      if (contactIds.length === 0) {
-        toast.error("No new contacts were imported (all may already exist)");
-        return;
+      if (contactMode === "csv") {
+        const importRes = await importContacts.mutateAsync(csvContacts);
+        contactIds = importRes.data?.contactIds || [];
+        if (contactIds.length === 0) {
+          toast.error("No new contacts were imported (all may already exist)");
+          return;
+        }
       }
 
-      // 2. Create the campaign linked to the imported contacts
+      // 1. Create the campaign linked to the selected contacts
       const campaignRes: any = await new Promise((resolve, reject) => {
         createCampaign(
           { name: campaignName, templateId: selectedTemplate, contactIds, status: "draft" } as any,
@@ -160,15 +222,11 @@ export default function BulkMessaging() {
         );
       });
 
-      // 3. Launch it
+      // 2. Launch it
       launchCampaign(campaignRes.data?._id, {
         onSuccess: () => {
           toast.success(`Campaign launched to ${contactIds.length} contact(s)!`);
-          setCampaignName("");
-          setSelectedTemplate("");
-          setFileName(null);
-          setParsedContacts([]);
-          setParseInfo(null);
+          resetForm();
         },
         onError: (err: any) => toast.error(err?.response?.data?.message || "Launch failed"),
       });
@@ -225,6 +283,11 @@ export default function BulkMessaging() {
                 </option>
               ))}
             </select>
+            {templates.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                No templates yet. Create one under the Templates page first.
+              </p>
+            )}
           </div>
         </div>
 
@@ -242,7 +305,33 @@ export default function BulkMessaging() {
             </button>
           </div>
 
-          {showFormat && (
+          {/* Mode toggle */}
+          <div className="flex gap-2 rounded-lg bg-secondary/50 p-1">
+            <button
+              type="button"
+              onClick={() => switchMode("csv")}
+              className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                contactMode === "csv"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Upload className="mr-1 inline h-3 w-3" /> Upload CSV
+            </button>
+            <button
+              type="button"
+              onClick={() => switchMode("existing")}
+              className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                contactMode === "existing"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Users className="mr-1 inline h-3 w-3" /> Pick from contacts
+            </button>
+          </div>
+
+          {showFormat && contactMode === "csv" && (
             <div className="rounded-lg border border-border bg-surface-raised p-3 text-xs text-muted-foreground">
               <p className="mb-1 font-semibold text-foreground">CSV columns (first row = header)</p>
               <p><code className="text-primary">phone</code> *required* (e.g. +15551234567)</p>
@@ -254,69 +343,120 @@ export default function BulkMessaging() {
               <p><code className="text-primary">status</code> optional (active/blocked) — defaults to active</p>
               <p className="mt-2 text-[11px]">Example:</p>
               <pre className="mt-1 overflow-x-auto rounded bg-background/60 p-2 text-[11px] leading-relaxed">
-phone,name,email,tags,status{'\n'}+15551234567,John Doe,john@x.com,vip,active{'\n'}+15559876543,Jane Smith,,lead,active
+{`phone,name,email,tags,status\n+15551234567,John Doe,john@x.com,vip,active\n+15559876543,Jane Smith,,lead,active`}
               </pre>
             </div>
           )}
 
-          <div className="space-y-2">
-            <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              Upload Contacts (CSV)
-            </label>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".csv,text/csv"
-              onChange={handleFileChange}
-              className="hidden"
-            />
-            <div
-              onClick={() => fileInputRef.current?.click()}
-              className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-primary/30 bg-primary/5 p-8 transition-colors hover:border-primary/50 hover:bg-primary/10"
-            >
-              <Upload className="h-8 w-8 text-primary/60" />
-              <p className="text-sm text-muted-foreground">
-                Drop CSV file here or click to upload
-              </p>
-              <p className="text-xs text-muted-foreground">
-                Max 50,000 contacts per batch
-              </p>
-            </div>
-            {fileName && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="flex items-center gap-3 rounded-lg border border-border bg-surface-raised p-3"
-              >
-                <FileSpreadsheet className="h-5 w-5 text-primary" />
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-foreground">{fileName}</p>
+          {contactMode === "csv" ? (
+            <>
+              <div className="space-y-2">
+                <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Upload Contacts (CSV)
+                </label>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed border-primary/30 bg-primary/5 p-8 transition-colors hover:border-primary/50 hover:bg-primary/10"
+                >
+                  <Upload className="h-8 w-8 text-primary/60" />
+                  <p className="text-sm text-muted-foreground">
+                    Drop CSV file here or click to upload
+                  </p>
                   <p className="text-xs text-muted-foreground">
-                    {parseInfo
-                      ? `${parseInfo.valid} valid contact(s)${parseInfo.invalid ? `, ${parseInfo.invalid} skipped (no phone)` : ""}`
-                      : "Contacts list selected"}
+                    Max 50,000 contacts per batch
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setFileName(null);
-                    setParsedContacts([]);
-                    setParseInfo(null);
-                  }}
-                  className="text-muted-foreground hover:text-foreground"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </motion.div>
-            )}
-          </div>
+                {fileName && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="flex items-center gap-3 rounded-lg border border-border bg-surface-raised p-3"
+                  >
+                    <FileSpreadsheet className="h-5 w-5 text-primary" />
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-foreground">{fileName}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {parseInfo
+                          ? `${parseInfo.valid} valid contact(s)${parseInfo.invalid ? `, ${parseInfo.invalid} skipped (no phone)` : ""}`
+                          : "Contacts list selected"}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFileName(null);
+                        setParsedContacts([]);
+                        setParseInfo(null);
+                      }}
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </motion.div>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="space-y-2">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  type="text"
+                  value={contactSearch}
+                  onChange={(e) => setContactSearch(e.target.value)}
+                  placeholder="Search contacts by name or phone..."
+                  className="w-full rounded-lg border border-border bg-surface-raised py-2.5 pl-9 pr-4 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary/50 focus:outline-none"
+                />
+              </div>
+              <div className="max-h-56 overflow-y-auto rounded-lg border border-border divide-y divide-border">
+                {contacts.length === 0 ? (
+                  <p className="p-4 text-center text-sm text-muted-foreground">
+                    No contacts found
+                  </p>
+                ) : (
+                  contacts.map((ct: Contact) => (
+                    <label
+                      key={ct._id}
+                      className="flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-secondary/40"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedContactIds.includes(ct._id)}
+                        onChange={() => toggleContact(ct._id)}
+                        className="h-4 w-4 accent-primary"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-foreground">
+                          {ct.name || "Unnamed"}
+                        </p>
+                        <p className="truncate text-xs text-muted-foreground">{ct.phone}</p>
+                      </div>
+                    </label>
+                  ))
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {selectedContactIds.length} contact(s) selected
+              </p>
+            </div>
+          )}
 
           <button
             type="button"
             onClick={handleCreateAndLaunch}
-            disabled={creating || !campaignName || !selectedTemplate || parsedContacts.length === 0}
-            className={`w-full rounded-lg px-6 py-3 text-sm font-semibold transition-all ${campaignName && selectedTemplate && parsedContacts.length > 0 ? "shimmer-btn text-primary-foreground hover:opacity-90" : "bg-secondary text-muted-foreground cursor-not-allowed"}`}
+            disabled={creating || !campaignName || !selectedTemplate || !hasContacts}
+            className={`w-full rounded-lg px-6 py-3 text-sm font-semibold transition-all ${
+              campaignName && selectedTemplate && hasContacts
+                ? "shimmer-btn text-primary-foreground hover:opacity-90"
+                : "bg-secondary text-muted-foreground cursor-not-allowed"
+            }`}
           >
             <span className="flex items-center justify-center gap-2">
               {creating ? (
@@ -339,17 +479,19 @@ phone,name,email,tags,status{'\n'}+15551234567,John Doe,john@x.com,vip,active{'\
           <button
             type="button"
             onClick={() => setShowFilters(!showFilters)}
-            className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${showFilters ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-secondary"}`}
+            className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
+              showFilters
+                ? "border-primary bg-primary/10 text-primary"
+                : "border-border text-muted-foreground hover:bg-secondary"
+            }`}
           >
             <Filter className="h-3 w-3" /> Filter
           </button>
         </div>
 
         {showFilters && (
-          <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3 bg-surface-raised">
-            <span className="text-xs font-medium text-muted-foreground mr-2">
-              Status:
-            </span>
+          <div className="flex flex-wrap items-center gap-2 border-b border-border bg-surface-raised px-5 py-3">
+            <span className="mr-2 text-xs font-medium text-muted-foreground">Status:</span>
             {[
               "all",
               "draft",
@@ -362,7 +504,11 @@ phone,name,email,tags,status{'\n'}+15551234567,John Doe,john@x.com,vip,active{'\
               <button
                 key={s}
                 onClick={() => setCampaignFilter(s)}
-                className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${campaignFilter === s ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:text-foreground"}`}
+                className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                  campaignFilter === s
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-secondary text-muted-foreground hover:text-foreground"
+                }`}
               >
                 {s === "all" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
               </button>
@@ -396,8 +542,8 @@ phone,name,email,tags,status{'\n'}+15551234567,John Doe,john@x.com,vip,active{'\
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {filteredCampaigns.length > 0 ? (
-                filteredCampaigns.map((c, i) => (
+              {filteredCampaignsView().length > 0 ? (
+                filteredCampaignsView().map((c, i) => (
                   <motion.tr
                     key={c._id || i}
                     initial={{ opacity: 0 }}
@@ -410,19 +556,21 @@ phone,name,email,tags,status{'\n'}+15551234567,John Doe,john@x.com,vip,active{'\
                     </td>
                     <td className="px-5 py-3.5">
                       <span
-                        className={`rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusColors[c.status] || "bg-secondary text-muted-foreground"}`}
+                        className={`rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                          statusColors[c.status] || "bg-secondary text-muted-foreground"
+                        }`}
                       >
                         {c.status}
                       </span>
                     </td>
                     <td className="px-5 py-3.5 text-sm tabular-nums text-foreground">
-                      {c.sentCount?.toLocaleString() || 0}
+                      {c.stats?.sent ?? c.sentCount ?? 0}
                     </td>
                     <td className="px-5 py-3.5 text-sm tabular-nums text-foreground">
-                      {c.deliveredCount?.toLocaleString() || 0}
+                      {c.stats?.delivered ?? c.deliveredCount ?? 0}
                     </td>
                     <td className="px-5 py-3.5 text-sm tabular-nums text-destructive">
-                      {c.failedCount > 0 ? c.failedCount : "—"}
+                      {c.stats?.failed ? c.stats.failed : c.failedCount ? c.failedCount : "—"}
                     </td>
                     <td className="px-5 py-3.5">
                       <div className="flex gap-1">
@@ -462,6 +610,13 @@ phone,name,email,tags,status{'\n'}+15551234567,John Doe,john@x.com,vip,active{'\
                             Cancel
                           </button>
                         )}
+                        <button
+                          onClick={() => setDeleteTarget(c._id)}
+                          className="rounded-md px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-secondary"
+                          title="Delete campaign"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
                       </div>
                     </td>
                   </motion.tr>
@@ -480,6 +635,46 @@ phone,name,email,tags,status{'\n'}+15551234567,John Doe,john@x.com,vip,active{'\
           </table>
         )}
       </div>
+
+      {/* Themed delete confirmation */}
+      <AlertDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete campaign?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the campaign
+              {deleteTarget ? ` “${campaigns.find((c) => c._id === deleteTarget)?.name}”` : ""}.
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (deleteTarget) {
+                  deleteCampaign(deleteTarget, {
+                    onSuccess: () => toast.success("Campaign deleted"),
+                  });
+                }
+              }}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </motion.div>
   );
+
+  function filteredCampaignsView() {
+    return campaignFilter === "all"
+      ? campaigns
+      : campaigns.filter((c) => c.status === campaignFilter);
+  }
 }
