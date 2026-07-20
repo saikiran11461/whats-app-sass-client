@@ -6,6 +6,7 @@ export interface Group {
   _id: string;
   name: string;
   description?: string;
+  color?: string;
   contactCount: number;
   createdAt: string;
   updatedAt: string;
@@ -59,6 +60,64 @@ export function useDeleteGroup() {
   return useMutation({
     mutationFn: (id: string) => api.delete(`/groups/${id}`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.groups.all }),
+  });
+}
+
+export function useAddGroupContacts() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, contactIds }: { id: string; contactIds: string[] }) =>
+      api.post(`/groups/${id}/contacts`, { contactIds }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.groups.detail(variables.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.groups.contacts(variables.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.groups.all });
+    },
+  });
+}
+
+export function useImportGroupContacts() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, contactIds }: { id: string; contactIds: string[] }) =>
+      api.post(`/groups/${id}/contacts/bulk-import`, { contactIds }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.groups.detail(variables.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.groups.contacts(variables.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.groups.all });
+    },
+  });
+}
+
+export interface ImportContactInput {
+  name?: string;
+  phone: string;
+  email?: string;
+}
+
+export function useImportContactsToGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, contacts }: { id: string; contacts: ImportContactInput[] }) =>
+      api.post(`/groups/${id}/contacts/import`, { contacts }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.groups.detail(variables.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.groups.contacts(variables.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.groups.all });
+    },
+  });
+}
+
+export function useRemoveGroupContact() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, contactId }: { id: string; contactId: string }) =>
+      api.delete(`/groups/${id}/contacts/${contactId}`),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.groups.detail(variables.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.groups.contacts(variables.id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.groups.all });
+    },
   });
 }
 

@@ -4,7 +4,8 @@ import { api, queryKeys } from "@/lib/api";
 export interface Template {
   _id: string;
   name: string;
-  body: string;
+  body?: string;
+  content?: string;
   header?: string;
   footer?: string;
   category: "marketing" | "utility" | "authentication" | "otp";
@@ -71,6 +72,14 @@ export function useDeleteTemplate() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.delete(`/templates/${id}`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.templates.all }),
+  });
+}
+
+export function useCloneTemplate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post(`/templates/${id}/clone`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.templates.all }),
   });
 }

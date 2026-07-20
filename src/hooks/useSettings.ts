@@ -33,7 +33,7 @@ export function useSettings() {
   return useQuery({
     queryKey: queryKeys.settings.all,
     queryFn: () => api.get<AppSettings>("/settings"),
-    select: (res) => res.data,
+    select: (res) => res.data
   });
 }
 

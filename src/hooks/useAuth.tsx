@@ -13,6 +13,8 @@ export interface User {
   avatar?: string;
   brandName?: string;
   tenantId: string;
+  // The brand the user is currently working in (drives data scoping).
+  activeBrandId?: string | null;
   lastLogin?: string;
   createdAt: string;
   updatedAt: string;
@@ -31,6 +33,8 @@ interface AuthContextType extends AuthState {
   logout: () => Promise<void>;
   updateProfile: (data: Partial<User>) => Promise<void>;
   refreshUser: () => Promise<void>;
+  // Switch the active brand; scopes all data to that brand going forward.
+  setActiveBrand: (brandId: string) => Promise<void>;
   clearError: () => void;
 }
 
@@ -154,6 +158,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setState((prev) => ({ ...prev, error: null }));
   }, []);
 
+  const setActiveBrand = useCallback(async (brandId: string) => {
+    const response = await api.post<{ activeBrandId: string }>(`/brands/${brandId}/activate`, {});
+    setState((prev) => ({
+      ...prev,
+      user: { ...(prev.user as User), activeBrandId: response.data?.activeBrandId ?? brandId },
+    }));
+    // Invalidate every cached list so it re-scopes to the new active brand.
+    queryClient.invalidateQueries();
+  }, [queryClient]);
+
   return (
     <AuthContext.Provider
       value={{
@@ -163,6 +177,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         logout,
         updateProfile,
         refreshUser,
+        setActiveBrand,
         clearError,
       }}
     >

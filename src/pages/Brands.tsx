@@ -2,6 +2,7 @@ import { motion } from "framer-motion";
 import { Plus, Building2, Edit, Trash2, MoreHorizontal, RefreshCw, AlertTriangle, CheckCircle, XCircle, Search, Filter, X, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { useBrands, useCreateBrand, useUpdateBrand, useDeleteBrand, useReconnectBrand, type Brand } from "@/hooks/useBrands";
+import { useAuth } from "@/hooks/useAuth";
 
 function formatRelativeTime(dateStr?: string | null) {
   if (!dateStr) return "never";
@@ -35,6 +36,8 @@ export default function Brands() {
   const updateBrand = useUpdateBrand();
   const deleteBrand = useDeleteBrand();
   const reconnectBrand = useReconnectBrand();
+  const { user } = useAuth();
+  const activeBrandId = user?.activeBrandId;
 
   const [statusFilter, setStatusFilter] = useState("all");
   const [connectionFilter, setConnectionFilter] = useState("all");
@@ -142,12 +145,16 @@ export default function Brands() {
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {filtered.map((b, i) => (
-          <motion.div key={b._id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.08 }} className="rounded-xl glass-card stat-card-glow p-5 hover-lift">
+          <motion.div key={b._id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.08 }} className={`rounded-xl glass-card stat-card-glow p-5 hover-lift ${b._id === activeBrandId ? "ring-2 ring-primary" : ""}`}>
             <div className="flex items-start justify-between">
               <div className="flex items-center gap-3">
                 <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10"><Building2 className="h-5 w-5 text-primary" /></div>
                 <div>
-                  <h3 className="text-sm font-semibold text-foreground">{b.businessName}</h3>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-semibold text-foreground">{b.businessName}</h3>
+                    {b.isDefault && <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-primary">Default</span>}
+                    {b._id === activeBrandId && <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-500">Active</span>}
+                  </div>
                   <p className="text-xs tabular-nums text-muted-foreground">{b.phoneNumber || "—"}</p>
                 </div>
               </div>

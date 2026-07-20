@@ -7,12 +7,8 @@ import {
   Bot, ShieldCheck, Package, BarChart3, Plug, Zap, QrCode,
 } from "lucide-react";
 import { useState } from "react";
-
-const brands = [
-  { name: "Acme Store", status: "active" },
-  { name: "Fresh Mart", status: "active" },
-  { name: "Style Hub", status: "inactive" },
-];
+import { useBrands } from "@/hooks/useBrands";
+import { useAuth } from "@/hooks/useAuth";
 
 const navGroups = [
   {
@@ -78,8 +74,13 @@ interface AppSidebarProps {
 
 export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
   const location = useLocation();
-  const [activeBrand, setActiveBrand] = useState(0);
+  const { data: brands = [] } = useBrands();
+  const { user, setActiveBrand } = useAuth();
   const [brandOpen, setBrandOpen] = useState(false);
+
+  // The brand the user is currently scoped to (from auth, not local state).
+  const activeBrandId = user?.activeBrandId ?? brands[0]?._id ?? null;
+  const activeBrand = brands.find((b) => b._id === activeBrandId) || brands[0];
 
   return (
     <motion.aside
@@ -119,10 +120,10 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                 <Building2 className="h-3.5 w-3.5 text-sidebar-primary" />
               </div>
               <div className="flex-1 text-left">
-                <p className="text-[12px] font-semibold text-sidebar-accent-foreground">{brands[activeBrand].name}</p>
+                <p className="text-[12px] font-semibold text-sidebar-accent-foreground">{activeBrand?.businessName || "No brand"}</p>
                 <p className="text-[10px] text-sidebar-primary">
                   <span className="inline-block h-1.5 w-1.5 rounded-full bg-sidebar-primary mr-1" />
-                  {brands[activeBrand].status === "active" ? "Active" : "Inactive"}
+                  {activeBrand?.status === "active" ? "Active" : "Inactive"}
                 </p>
               </div>
               <ChevronDown className={`h-3.5 w-3.5 text-sidebar-foreground transition-transform ${brandOpen ? "rotate-180" : ""}`} />
@@ -135,14 +136,18 @@ export function AppSidebar({ collapsed, onToggle }: AppSidebarProps) {
                   exit={{ opacity: 0, y: -4 }}
                   className="absolute left-0 right-0 top-full z-50 mt-1 rounded-lg border border-sidebar-border/50 bg-sidebar overflow-hidden shadow-lg"
                 >
-                  {brands.map((b, i) => (
+                  {brands.length === 0 && (
+                    <p className="px-3 py-2.5 text-[12px] text-sidebar-foreground/60">No brands yet</p>
+                  )}
+                  {brands.map((b) => (
                     <button
-                      key={i}
-                      onClick={() => { setActiveBrand(i); setBrandOpen(false); }}
-                      className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-sidebar-accent ${i === activeBrand ? "bg-sidebar-accent" : ""}`}
+                      key={b._id}
+                      onClick={() => { setActiveBrand(b._id); setBrandOpen(false); }}
+                      className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-sidebar-accent ${b._id === activeBrandId ? "bg-sidebar-accent" : ""}`}
                     >
                       <span className={`h-2 w-2 rounded-full ${b.status === "active" ? "bg-sidebar-primary" : "bg-amber"}`} />
-                      <span className="text-[12px] font-medium text-sidebar-accent-foreground">{b.name}</span>
+                      <span className="text-[12px] font-medium text-sidebar-accent-foreground">{b.businessName}</span>
+                      {b.isDefault && <span className="ml-auto text-[9px] uppercase tracking-wide text-sidebar-primary/70">Default</span>}
                     </button>
                   ))}
                 </motion.div>

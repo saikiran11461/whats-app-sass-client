@@ -17,6 +17,8 @@ export interface Brand {
   lastSync?: string | null;
   messageCount?: number;
   contactCount?: number;
+  isDefault?: boolean;
+  slug?: string;
   status: "active" | "inactive";
   createdAt: string;
   updatedAt: string;
