@@ -131,8 +131,8 @@ export interface SendToGroupResult {
 export function useSendToGroup() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, content, templateId }: { id: string; content?: string; templateId?: string }) =>
-      api.post<SendToGroupResult>(`/groups/${id}/send`, { content, templateId }),
+    mutationFn: ({ id, content, templateId, mediaUrl, messageType }: { id: string; content?: string; templateId?: string; mediaUrl?: string; messageType?: string }) =>
+      api.post<SendToGroupResult>(`/groups/${id}/send`, { content, templateId, mediaUrl, messageType }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.messages.all });
       queryClient.invalidateQueries({ queryKey: queryKeys.conversations.all });

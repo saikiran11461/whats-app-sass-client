@@ -63,6 +63,7 @@ const navGroups = [
       { label: "Analytics", icon: BarChart3, path: "/analytics" },
       { label: "Logs", icon: FileText, path: "/logs" },
       { label: "Reports", icon: Download, path: "/reports" },
+      { label: "Test Console", icon: Zap, path: "/test-console" },
     ],
   },
 ];

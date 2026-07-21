@@ -13,7 +13,9 @@ import {
   UserPlus,
   Upload,
   Check,
+  MessageSquare,
 } from "lucide-react";
+import { Link } from "react-router-dom";
 import { useState, useEffect } from "react";
 import {
   useGroups,
@@ -282,6 +284,12 @@ export default function Groups() {
                 </div>
               </div>
               <div className="mt-4 flex items-center gap-2 border-t border-border pt-3">
+                <Link
+                  to={`/groups/${g._id}/chat`}
+                  className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs text-primary hover:bg-primary/10 hover:text-primary transition-colors"
+                >
+                  <MessageSquare className="h-3 w-3" /> View Chat
+                </Link>
                 <button
                   onClick={() => openSend(g)}
                   disabled={!g.contactCount || g.contactCount === 0}

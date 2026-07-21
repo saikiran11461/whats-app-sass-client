@@ -107,6 +107,15 @@ export function useToggleStar() {
   });
 }
 
+export function useGroupMessages(groupId: string, params?: { page?: number; limit?: number }) {
+  return useQuery({
+    queryKey: ["groups", groupId, "messages", params],
+    queryFn: () => api.get<any[]>(`/groups/${groupId}/messages`, { params }),
+    select: (res) => ({ messages: res.data, pagination: res.pagination }),
+    enabled: !!groupId,
+  });
+}
+
 export function useDeleteMessage() {
   const queryClient = useQueryClient();
   return useMutation({

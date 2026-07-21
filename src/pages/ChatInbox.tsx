@@ -7,6 +7,9 @@ import {
   Phone,
   MoreVertical,
   CheckCheck,
+  Check,
+  Clock,
+  AlertTriangle,
   Loader2,
 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
@@ -140,7 +143,9 @@ export default function ChatInbox() {
                     </span>
                   </div>
                   <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                    {c.lastMessage || "No messages yet"}
+                    {typeof c.lastMessage === "object" && c.lastMessage !== null
+                      ? c.lastMessage.content || "[Media]"
+                      : c.lastMessage || "No messages yet"}
                   </p>
                 </div>
                 {c.unreadCount > 0 && (
@@ -206,15 +211,61 @@ export default function ChatInbox() {
                     <div
                       className={`max-w-[70%] rounded-xl px-4 py-2.5 ${m.contactId === selectedConv.contactId ? "bg-secondary text-foreground" : "bg-primary/15 text-foreground"}`}
                     >
-                      <p className="text-sm">{m.content}</p>
+                      {/* Media content */}
+                      {m.mediaUrl && (
+                        <div className="mb-2 overflow-hidden rounded-lg">
+                          {m.messageType === "image" ? (
+                            <img
+                              src={m.mediaUrl}
+                              alt="Media"
+                              className="max-h-48 w-full rounded-lg object-cover"
+                              loading="lazy"
+                            />
+                          ) : (
+                            <div className="flex items-center gap-2 rounded-lg bg-background/50 px-3 py-2">
+                              <Paperclip className="h-4 w-4 text-primary" />
+                              <span className="text-xs text-muted-foreground">
+                                {m.fileName || "Attachment"}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {/* Template indicator */}
+                      {m.templateId && !m.content && (
+                        <p className="text-sm text-primary/80 italic">
+                          [Template Message]
+                        </p>
+                      )}
+                      {/* Message text */}
+                      {m.content && (
+                        <p className="text-sm">{m.content}</p>
+                      )}
                       <div className="mt-1 flex items-center gap-1 justify-end">
                         <span className="text-[10px] tabular-nums text-muted-foreground">
                           {formatTime(m.createdAt)}
                         </span>
                         {m.contactId !== selectedConv.contactId && (
-                          <CheckCheck
-                            className={`h-3 w-3 ${m.status === "read" ? "text-primary" : "text-muted-foreground"}`}
-                          />
+                          <>
+                            {m.status === "read" && (
+                              <CheckCheck className="h-3 w-3 text-primary" />
+                            )}
+                            {m.status === "delivered" && (
+                              <CheckCheck className="h-3 w-3 text-muted-foreground" />
+                            )}
+                            {m.status === "sent" && (
+                              <Check className="h-3 w-3 text-muted-foreground" />
+                            )}
+                            {(m.status === "pending" || m.status === "queued") && (
+                              <Clock className="h-3 w-3 text-muted-foreground" />
+                            )}
+                            {m.status === "failed" && (
+                              <AlertTriangle className="h-3 w-3 text-destructive" />
+                            )}
+                            {!m.status && (
+                              <Check className="h-3 w-3 text-muted-foreground" />
+                            )}
+                          </>
                         )}
                       </div>
                     </div>

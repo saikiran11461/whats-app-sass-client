@@ -16,6 +16,7 @@ import SendMessage from "./pages/SendMessage";
 import BulkMessaging from "./pages/BulkMessaging";
 import ContactsManagement from "./pages/ContactsManagement";
 import Groups from "./pages/Groups";
+import GroupChat from "./pages/GroupChat";
 import MessageLogs from "./pages/MessageLogs";
 import Templates from "./pages/Templates";
 import ChatInbox from "./pages/ChatInbox";
@@ -30,6 +31,7 @@ import Analytics from "./pages/Analytics";
 import Integrations from "./pages/Integrations";
 import QuickReplies from "./pages/QuickReplies";
 import QRWidget from "./pages/QRWidget";
+import TestConsole from "./pages/TestConsole";
 import NotFound from "./pages/NotFound.tsx";
 
 const queryClient = new QueryClient({
@@ -61,6 +63,7 @@ const App = () => (
                   <Route path="/campaigns" element={<BulkMessaging />} />
                   <Route path="/contacts" element={<ContactsManagement />} />
                   <Route path="/groups" element={<Groups />} />
+                  <Route path="/groups/:id/chat" element={<ErrorBoundary><GroupChat /></ErrorBoundary>} />
                   <Route path="/logs" element={<MessageLogs />} />
                   <Route path="/templates" element={<ErrorBoundary><Templates /></ErrorBoundary>} />
                   <Route path="/inbox" element={<ErrorBoundary><ChatInbox /></ErrorBoundary>} />
@@ -74,6 +77,7 @@ const App = () => (
                   <Route path="/integrations" element={<Integrations />} />
                   <Route path="/quick-replies" element={<QuickReplies />} />
                   <Route path="/qr-widget" element={<QRWidget />} />
+                  <Route path="/test-console" element={<ErrorBoundary><TestConsole /></ErrorBoundary>} />
                   <Route path="/settings" element={<ErrorBoundary><SettingsPage /></ErrorBoundary>} />
                 </Route>
               </Route>
