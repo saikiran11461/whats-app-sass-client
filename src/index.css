@@ -90,6 +90,21 @@
   ::-webkit-scrollbar-thumb:hover {
     background: hsl(var(--muted-foreground));
   }
+
+  /* Sidebar scrollbar — matches the dark sidebar background */
+  .glass-sidebar::-webkit-scrollbar,
+  .glass-sidebar *::-webkit-scrollbar {
+    width: 4px;
+  }
+  .glass-sidebar::-webkit-scrollbar-thumb,
+  .glass-sidebar *::-webkit-scrollbar-thumb {
+    background: hsl(var(--sidebar-border));
+    border-radius: 4px;
+  }
+  .glass-sidebar::-webkit-scrollbar-thumb:hover,
+  .glass-sidebar *::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--sidebar-primary) / 0.5);
+  }
 }
 
 @layer utilities {

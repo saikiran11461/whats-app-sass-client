@@ -1,22 +1,16 @@
-# Welcome to your Lovable project
+# WA Command - WhatsApp Business Suite
+
+Enterprise WhatsApp Business management platform for managing contacts, campaigns, templates, analytics, and more.
 
 ## Project info
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
+A full-stack WhatsApp Business management platform built with React, TypeScript, Node.js, and MongoDB.
 
 ## How can I edit this code?
 
-There are several ways of editing your application.
+### Use your preferred IDE
 
-**Use Lovable**
-
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+If you want to work locally using your own IDE, you can clone this repo and push changes.
 
 The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
 
@@ -59,16 +53,28 @@ This project is built with:
 - React
 - shadcn-ui
 - Tailwind CSS
+- Node.js
+- MongoDB
+- Socket.io
 
 ## How can I deploy this project?
 
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
+Build the project and deploy the `dist/` folder to your preferred hosting provider:
 
-## Can I connect a custom domain to my Lovable project?
+```sh
+npm run build
+```
 
-Yes, you can!
+## Features
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
-
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
-# whats-app-sass-client
+- **Dashboard** - Real-time analytics and metrics
+- **Contact Management** - Import, segment, and manage contacts
+- **Campaign Management** - Create and manage WhatsApp campaigns
+- **Message Templates** - Create and manage WhatsApp message templates
+- **Group Chat** - Manage WhatsApp group conversations
+- **Auto Reply** - Set up automated responses
+- **Quick Replies** - Create reusable message snippets
+- **Chat Inbox** - Unified inbox for conversations
+- **Analytics** - Detailed reporting and insights
+- **Bulk Messaging** - Send messages to multiple contacts
+- **Scheduler** - Schedule messages for later delivery
