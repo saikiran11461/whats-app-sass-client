@@ -10,8 +10,16 @@ import {
   Users,
   Search,
   Trash2,
+  Variable,
+  Smartphone,
+  Eye,
+  Check,
+  AlertCircle,
+  RefreshCw,
+  Table2,
+  ListOrdered,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect, useMemo } from "react";
 import {
   useCampaigns,
   useCreateCampaign,
@@ -23,6 +31,10 @@ import {
 } from "@/hooks/useCampaigns";
 import { useTemplates } from "@/hooks/useTemplates";
 import { useContacts, type Contact } from "@/hooks/useContacts";
+import { useSocket, useSocketEvent } from "@/hooks/useSocket";
+import { extractTemplateVariables, previewBodyWithValues } from "@/lib/template-utils";
+import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/api";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -72,14 +84,16 @@ function parseCsvLine(line: string): string[] {
 function parseCsv(text: string): { headers: string[]; rows: Record<string, string>[] } {
   const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
   if (lines.length === 0) return { headers: [], rows: [] };
-  const headers = parseCsvLine(lines[0]).map((h) => h.trim().toLowerCase());
+  const rawHeaders = parseCsvLine(lines[0]).map((h) => h.trim());
+  const lowHeaders = rawHeaders.map((h) => h.toLowerCase());
   const rows = lines.slice(1).map((line) => {
     const cells = parseCsvLine(line);
     const obj: Record<string, string> = {};
-    headers.forEach((h, i) => { obj[h] = (cells[i] ?? "").trim(); });
+    lowHeaders.forEach((h, i) => { obj[h] = (cells[i] ?? "").trim(); });
     return obj;
   });
-  return { headers, rows };
+  // Return original headers for display (preserving case), and lowercased for lookup
+  return { headers: rawHeaders, rows };
 }
 
 const splitList = (v?: string) => (v ? v.split(/[;,]/).map((s) => s.trim()).filter(Boolean) : []);
@@ -96,9 +110,46 @@ function rowToContact(row: Record<string, string>) {
   };
 }
 
+/**
+ * Render the template body with variables filled from a contact row + column mapping.
+ * Like WATI/Interakt — shows a live preview of the personalized message.
+ */
+function renderPreviewBodyWithValues(
+  body: string,
+  mapping: Record<string, string>,
+  contact: Record<string, any>
+): string {
+  if (!body) return "";
+  // Build a lookup of all available contact fields
+  const contactFields: Record<string, string> = {};
+  if (contact) {
+    Object.keys(contact).forEach((key) => {
+      const val = contact[key];
+      if (typeof val === 'string') contactFields[key] = val;
+      else if (typeof val === 'object' && val !== null) contactFields[key] = JSON.stringify(val);
+    });
+    // Also add raw CSV data if available
+    if (contact._raw) {
+      Object.keys(contact._raw).forEach((key) => {
+        contactFields[key] = contact._raw[key];
+      });
+    }
+  }
+
+  return body.replace(/\{\{(\d+)\}\}/g, (_, num) => {
+    const mappedCol = mapping[num];
+    if (mappedCol && contactFields[mappedCol]) {
+      return contactFields[mappedCol];
+    }
+    // Fallback: show the original placeholder
+    return `{{${num}}}`;
+  });
+}
+
 export default function BulkMessaging() {
   const [fileName, setFileName] = useState<string | null>(null);
   const [parsedContacts, setParsedContacts] = useState<Record<string, any>[]>([]);
+  const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
   const [parseInfo, setParseInfo] = useState<{ total: number; valid: number; invalid: number } | null>(null);
   const [campaignName, setCampaignName] = useState("");
   const [selectedTemplate, setSelectedTemplate] = useState("");
@@ -109,12 +160,59 @@ export default function BulkMessaging() {
   const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
   const [contactSearch, setContactSearch] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [variableMapping, setVariableMapping] = useState<Record<string, string>>({});
+  const [previewContactIndex, setPreviewContactIndex] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const queryClient = useQueryClient();
+
+  // Selected template with body parsed for variables
+  const selectedTemplateObj = useMemo(
+    () => templates.find((t: any) => t._id === selectedTemplate),
+    [selectedTemplate, templates]
+  );
+  const templateVars = useMemo(
+    () => selectedTemplateObj ? extractTemplateVariables(selectedTemplateObj.body || "") : [],
+    [selectedTemplateObj]
+  );
+  const { subscribeToCampaign, unsubscribeFromCampaign } = useSocket();
 
   const { data: campaignsData, isLoading } = useCampaigns({
     status: campaignFilter !== "all" ? campaignFilter : undefined,
   });
   const campaigns = campaignsData?.campaigns || [];
+
+  // Subscribe to all campaigns for real-time progress updates
+  // Re-subscribes when the campaigns list reference changes (query refetch)
+  useEffect(() => {
+    const activeCampaigns = campaigns.filter((c) =>
+      ["running", "pending"].includes(c.status)
+    );
+    activeCampaigns.forEach((c) => subscribeToCampaign(c._id));
+    return () => {
+      activeCampaigns.forEach((c) => unsubscribeFromCampaign(c._id));
+    };
+  }, [campaigns]);
+
+  // Listen for real-time campaign progress updates
+  useSocketEvent("campaign:progress", (data: any) => {
+    // Invalidate campaigns to refresh stats from server
+    queryClient.invalidateQueries({ queryKey: queryKeys.campaigns.all });
+  });
+
+  // Listen for campaign completion/failure notifications
+  useSocketEvent("campaign:completed", (data: any) => {
+    if (data?.campaignId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.campaigns.all });
+      toast.success(`Campaign completed! ${data.stats?.sent || 0} messages sent`);
+    }
+  });
+
+  useSocketEvent("campaign:failed", (data: any) => {
+    if (data?.campaignId) {
+      queryClient.invalidateQueries({ queryKey: queryKeys.campaigns.all });
+      toast.error(`Campaign failed: ${data.error || "Unknown error"}`);
+    }
+  });
 
   const { data: templatesData } = useTemplates();
   const templates = templatesData?.templates || [];
@@ -153,16 +251,23 @@ export default function BulkMessaging() {
     if (!file) return;
     try {
       const text = await file.text();
-      const { rows } = parseCsv(text);
+      const { headers, rows } = parseCsv(text);
       const contacts = rows.map(rowToContact).filter((c) => c.phone);
       const invalid = rows.length - contacts.length;
       setFileName(file.name);
-      setParsedContacts(contacts);
+      // Store both parsed contacts AND raw rows for variable mapping preview
+      // The raw rows preserve original CSV column names (e.g., "Full Name")
+      setParsedContacts(contacts.map((c, i) => ({ ...c, _raw: rows[i] })));
+      setCsvHeaders(headers);
       setParseInfo({ total: rows.length, valid: contacts.length, invalid });
       if (contacts.length === 0) {
         toast.error("No valid rows found. Phone number is required for each contact.");
       } else {
         toast.success(`Parsed ${contacts.length} contact(s) from ${file.name}`);
+        // Auto-map CSV headers to template variables if template is already selected
+        if (selectedTemplateObj) {
+          autoMapVariables(headers);
+        }
       }
     } catch (err) {
       toast.error("Could not read the CSV file");
@@ -171,20 +276,52 @@ export default function BulkMessaging() {
     }
   };
 
+  /** Auto-map CSV headers to template variables based on common patterns */
+  const autoMapVariables = (headers: string[]) => {
+    if (!selectedTemplateObj || templateVars.length === 0) return;
+    const mapping: Record<string, string> = {};
+    const lowHeaders = headers.map((h) => h.toLowerCase().trim());
+    templateVars.forEach((v) => {
+      // Try to find a matching CSV column by pattern
+      const patterns = [
+        `var${v}`, `variable${v}`, `param${v}`, `value${v}`,
+        ...(v === 1 ? ['name', 'fullname', 'firstname', 'customer', 'user', 'person'] : []),
+        ...(v === 2 ? ['email', 'phone', 'order', 'id', 'code', 'number', 'city'] : []),
+        ...(v === 3 ? ['date', 'time', 'price', 'amount', 'link', 'url', 'address'] : []),
+      ];
+      const match = patterns.find((p) => lowHeaders.includes(p));
+      if (match) {
+        mapping[String(v)] = headers[lowHeaders.indexOf(match)];
+      }
+    });
+    setVariableMapping(mapping);
+  };
+
   const resetForm = () => {
     setCampaignName("");
     setSelectedTemplate("");
     setFileName(null);
     setParsedContacts([]);
+    setCsvHeaders([]);
     setParseInfo(null);
     setSelectedContactIds([]);
     setContactSearch("");
+    setVariableMapping({});
   };
 
   const handleCreateAndLaunch = async () => {
     if (!campaignName || !selectedTemplate) {
       toast.error("Campaign name and template are required");
       return;
+    }
+
+    // Validate variable mapping if template has variables
+    if (templateVars.length > 0) {
+      const unmapped = templateVars.filter((v) => !variableMapping[String(v)]);
+      if (unmapped.length > 0) {
+        toast.error(`Please map all template variables to CSV columns or enter default values (unmapped: {{${unmapped.join(", ")}}})`);
+        return;
+      }
     }
 
     const csvContacts = contactMode === "csv" ? parsedContacts : [];
@@ -212,14 +349,22 @@ export default function BulkMessaging() {
       }
 
       // 1. Create the campaign linked to the selected contacts
+      // Include templateVariables mapping so the campaign can personalize each message
+      const campaignData: any = {
+        name: campaignName,
+        templateId: selectedTemplate,
+        contactIds,
+        templateVariables: Object.fromEntries(
+          Object.entries(variableMapping).filter(([_, v]) => v)
+        ),
+        status: "draft",
+      };
+
       const campaignRes: any = await new Promise((resolve, reject) => {
-        createCampaign(
-          { name: campaignName, templateId: selectedTemplate, contactIds, status: "draft" } as any,
-          {
-            onSuccess: (res: any) => resolve(res),
-            onError: (err: any) => reject(err),
-          }
-        );
+        createCampaign(campaignData as any, {
+          onSuccess: (res: any) => resolve(res),
+          onError: (err: any) => reject(err),
+        });
       });
 
       // 2. Launch it
@@ -273,7 +418,14 @@ export default function BulkMessaging() {
             </label>
             <select
               value={selectedTemplate}
-              onChange={(e) => setSelectedTemplate(e.target.value)}
+              onChange={(e) => {
+                setSelectedTemplate(e.target.value);
+                setVariableMapping({});
+                // Auto-map if CSV is already loaded
+                if (csvHeaders.length > 0) {
+                  setTimeout(() => autoMapVariables(csvHeaders), 100);
+                }
+              }}
               className="w-full rounded-lg border border-border bg-surface-raised px-4 py-2.5 text-sm text-foreground focus:border-primary/50 focus:outline-none"
             >
               <option value="">Select a template...</option>
@@ -289,6 +441,120 @@ export default function BulkMessaging() {
               </p>
             )}
           </div>
+
+          {/* ── Variable Mapping Section ── */}
+          {selectedTemplateObj && templateVars.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              className="overflow-hidden rounded-lg border border-amber/20 bg-amber/5 p-3 space-y-3"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Variable className="h-4 w-4 text-amber" />
+                  <span className="text-xs font-semibold text-amber-700">
+                    Template Variable Mapping
+                  </span>
+                  <span className="rounded-full bg-amber/10 px-2 py-0.5 text-[9px] font-medium text-amber">
+                    {Object.keys(variableMapping).filter((k) => variableMapping[k]).length}/{templateVars.length} mapped
+                  </span>
+                </div>
+                {csvHeaders.length > 0 && (
+                  <button
+                    onClick={() => autoMapVariables(csvHeaders)}
+                    className="text-xs text-primary hover:underline"
+                  >
+                    Auto-map
+                  </button>
+                )}
+              </div>
+
+              <p className="text-[10px] text-muted-foreground italic">
+                Map CSV columns to template variables. Each contact will receive a personalized message with their data.
+              </p>
+
+              {/* Variable mapping rows */}
+              <div className="space-y-2">
+                {templateVars.map((v) => (
+                  <div key={v} className="flex items-center gap-2">
+                    <span className="w-12 shrink-0 rounded bg-amber-100 px-1.5 py-1 text-center text-[10px] font-bold text-amber-700">
+                      {`{{${v}}}`}
+                    </span>
+                    <span className="w-16 text-[10px] font-medium text-muted-foreground">
+                      Variable {v}
+                    </span>
+                    {csvHeaders.length > 0 ? (
+                      <select
+                        value={variableMapping[String(v)] || ""}
+                        onChange={(e) =>
+                          setVariableMapping((prev) => ({
+                            ...prev,
+                            [String(v)]: e.target.value,
+                          }))
+                        }
+                        className="flex-1 rounded-md border border-amber-200 bg-white/80 px-2 py-1 text-xs text-foreground focus:border-amber-400 focus:outline-none"
+                      >
+                        <option value="">— Select CSV column —</option>
+                        {csvHeaders.map((h) => (
+                          <option key={h} value={h}>
+                            {h}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        value={variableMapping[String(v)] || ""}
+                        onChange={(e) =>
+                          setVariableMapping((prev) => ({
+                            ...prev,
+                            [String(v)]: e.target.value,
+                          }))
+                        }
+                        placeholder="Enter a default value..."
+                        className="flex-1 rounded-md border border-amber-200 bg-white/80 px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:border-amber-400 focus:outline-none"
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Live preview with first contact */}
+              {parsedContacts.length > 0 && (
+                <div className="rounded-lg border border-border bg-white/60 p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                      Preview for first contact
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <span className="text-[9px] text-muted-foreground">
+                        Contact 1 of {parsedContacts.length}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="rounded-lg bg-primary/5 px-3 py-2">
+                    <div className="mb-1 flex items-center gap-2">
+                      <Smartphone className="h-3 w-3 text-primary" />
+                      <span className="truncate text-[11px] font-medium text-primary">
+                        {parsedContacts[0]?.name || parsedContacts[0]?.phone || "Contact"}
+                      </span>
+                    </div>
+                    <p className="text-xs leading-relaxed text-foreground">
+                      {renderPreviewBodyWithValues(selectedTemplateObj?.body || "", variableMapping, parsedContacts[0])}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Usage tip */}
+              <div className="flex items-start gap-1.5 rounded-md bg-blue-50 p-2">
+                <Info className="mt-0.5 h-3 w-3 shrink-0 text-blue-500" />
+                <p className="text-[10px] leading-relaxed text-blue-700">
+                  <strong>Tip:</strong> Add columns to your CSV like <code className="rounded bg-blue-100 px-1">name</code>, <code className="rounded bg-blue-100 px-1">city</code>, <code className="rounded bg-blue-100 px-1">order_id</code> and they'll appear in the dropdown above for mapping.
+                </p>
+              </div>
+            </motion.div>
+          )}
         </div>
 
         <div className="rounded-xl glass-card stat-card-glow p-6 space-y-5">

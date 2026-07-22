@@ -12,6 +12,8 @@ export interface Template {
   status: "pending" | "approved" | "rejected" | "disabled";
   language: string;
   rejectionReason?: string;
+  error?: string;
+  errorCode?: string;
   totalUses: number;
   lastUsedAt?: string;
   createdAt: string;
@@ -81,5 +83,62 @@ export function useCloneTemplate() {
   return useMutation({
     mutationFn: (id: string) => api.post(`/templates/${id}/clone`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.templates.all }),
+  });
+}
+
+export function useSubmitToMeta() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post(`/templates/${id}/submit-to-meta`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.templates.all }),
+  });
+}
+
+export function useSyncWithMeta() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post(`/templates/${id}/sync`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.templates.all }),
+  });
+}
+
+export function useBulkSyncWithMeta() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post(`/templates/sync-all`),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.templates.all }),
+  });
+}
+
+export interface MetaApprovedTemplate {
+  id: string;
+  name: string;
+  status: string;
+  category: string;
+  language: string;
+  components: Array<{
+    type: string;
+    text?: string;
+    format?: string;
+    buttons?: Array<{ type: string; text: string; url?: string; phone_number?: string }>;
+    example?: any;
+    cards?: any[];
+  }>;
+  previousCategory?: string;
+}
+
+/**
+ * Fetch APPROVED templates directly from Meta Cloud API.
+ * These are read-only reference templates (like "hello_world") that show users
+ * what a correctly formatted, approved template looks like.
+ * They cannot be deleted or modified through our app.
+ */
+export function useMetaApprovedTemplates() {
+  return useQuery({
+    queryKey: ['templates', 'meta-approved'],
+    queryFn: () => api.get<MetaApprovedTemplate[]>('/templates/meta-approved'),
+    select: (res) => (res.data || []) as MetaApprovedTemplate[],
+    staleTime: 5 * 60 * 1000, // Cache for 5 minutes
+    retry: 2,
   });
 }

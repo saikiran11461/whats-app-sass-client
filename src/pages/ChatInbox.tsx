@@ -11,20 +11,31 @@ import {
   Clock,
   AlertTriangle,
   Loader2,
+  Variable,
+  Smartphone,
+  Eye,
+  X,
+  FileText,
 } from "lucide-react";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useConversations, useMarkConversationRead } from "@/hooks/useConversations";
 import { useMessages, useSendMessage } from "@/hooks/useMessages";
+import { useTemplates } from "@/hooks/useTemplates";
 import { useSocket, useSocketEvent } from "@/hooks/useSocket";
 import { useContact } from "@/hooks/useContacts";
 import { useQueryClient } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/api";
 import { toast } from "sonner";
 
+import { extractTemplateVariables, previewBodyWithValues, buildTemplateComponents } from "@/lib/template-utils";
+
 export default function ChatInbox() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [msgInput, setMsgInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+  const [templateId, setTemplateId] = useState("");
+  const [templateVarValues, setTemplateVarValues] = useState<Record<string, string>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
 
@@ -41,10 +52,25 @@ export default function ChatInbox() {
   });
   const messages = messagesData?.messages || [];
 
+  const { data: templatesData } = useTemplates({ status: "approved" });
+  const templates = templatesData?.templates || [];
+
   const { mutate: sendMessage, isPending: sending } = useSendMessage();
   const { mutate: markRead } = useMarkConversationRead();
   const { isConnected, startTyping, stopTyping, joinConversation, leaveConversation } =
     useSocket();
+
+  // Selected template object
+  const selectedTemplate = useMemo(
+    () => templates.find((t: any) => t._id === templateId),
+    [templateId, templates]
+  );
+
+  // Extract variables from the selected template body
+  const templateVars = useMemo(
+    () => (selectedTemplate ? extractTemplateVariables(selectedTemplate.body || "") : []),
+    [selectedTemplate]
+  );
 
   // Join conversation room
   useEffect(() => {
@@ -68,10 +94,64 @@ export default function ChatInbox() {
     queryClient.invalidateQueries({ queryKey: ["conversations"] });
   });
 
+  // Listen for real-time message status updates (sent → delivered → read)
+  useSocketEvent("message:status", (data: any) => {
+    if (!selectedId || data.conversationId === selectedId) {
+      queryClient.invalidateQueries({ queryKey: ["messages"] });
+    }
+  });
+
   const handleSend = () => {
-    if (!msgInput.trim() || !selectedId) return;
+    if (!selectedId) return;
     const conversation = conversations.find((c) => c._id === selectedId);
     if (!conversation) return;
+
+    // Template message sending
+    if (templateId && selectedTemplate) {
+      // Validate template variables
+      if (templateVars.length > 0) {
+        const missing = templateVars.filter((v) => !templateVarValues[String(v)]?.trim());
+        if (missing.length > 0) {
+          toast.error(`Fill in all template variables (missing: {{${missing.join(", ")}}})`);
+          return;
+        }
+      }
+
+      // Build template components array with variable values (like WATI/Respond.io)
+      const templateComponents = templateVars.length > 0
+        ? buildTemplateComponents(templateVarValues)
+        : [];
+
+      sendMessage(
+        {
+          phone: conversation.contactPhone,
+          contactId: conversation.contactId,
+          contactName: conversation.contactName,
+          messageType: "template",
+          templateId: templateId,
+          templateName: selectedTemplate.name,
+          templateVariables: templateVarValues,
+          templateComponents: templateComponents,
+          content: `[Template: ${selectedTemplate.name}]`,
+        },
+        {
+          onSuccess: () => {
+            setMsgInput("");
+            setTemplateId("");
+            setTemplateVarValues({});
+            setShowTemplatePicker(false);
+            toast.success("Template sent");
+          },
+          onError: (err: any) => {
+            toast.error(err?.response?.data?.message || "Failed to send template");
+          },
+        }
+      );
+      return;
+    }
+
+    // Text message sending
+    if (!msgInput.trim()) return;
 
     sendMessage(
       {
@@ -279,10 +359,107 @@ export default function ChatInbox() {
               <div ref={messagesEndRef} />
             </div>
 
+            {/* Template picker bar — like WATI/Respond.io */}
+            {showTemplatePicker && (
+              <div className="border-t border-primary/20 bg-primary/5 px-3 py-2">
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  className="space-y-2"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <Smartphone className="h-3.5 w-3.5 text-primary" />
+                      <span className="text-xs font-semibold text-primary">Send Template</span>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setShowTemplatePicker(false);
+                        setTemplateId("");
+                        setTemplateVarValues({});
+                      }}
+                      className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+
+                  <select
+                    value={templateId}
+                    onChange={(e) => {
+                      setTemplateId(e.target.value);
+                      setTemplateVarValues({});
+                    }}
+                    className="w-full rounded-lg border border-border bg-secondary/50 px-3 py-1.5 text-xs text-foreground focus:outline-none"
+                  >
+                    <option value="">Select an approved template...</option>
+                    {templates.map((t: any) => (
+                      <option key={t._id} value={t._id}>
+                        {t.name} ({t.language || "en"})
+                      </option>
+                    ))}
+                  </select>
+
+                  {/* Template variable inputs */}
+                  {selectedTemplate && templateVars.length > 0 && (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-1">
+                        <Variable className="h-3 w-3 text-amber" />
+                        <span className="text-[10px] font-medium text-amber uppercase tracking-wider">
+                          Variables
+                        </span>
+                        <span className="text-[9px] text-muted-foreground">
+                          ({Object.values(templateVarValues).filter(Boolean).length}/{templateVars.length})
+                        </span>
+                      </div>
+                      {templateVars.map((v) => (
+                        <div key={v} className="flex items-center gap-1.5">
+                          <span className="shrink-0 rounded bg-amber-100 px-1 py-0.5 text-[9px] font-bold text-amber-700">
+                            {`{{${v}}}`}
+                          </span>
+                          <input
+                            type="text"
+                            value={templateVarValues[String(v)] || ""}
+                            onChange={(e) =>
+                              setTemplateVarValues((prev) => ({
+                                ...prev,
+                                [String(v)]: e.target.value,
+                              }))
+                            }
+                            placeholder={`Value for {{${v}}}...`}
+                            className="flex-1 rounded border border-amber-200 bg-white/80 px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground focus:border-amber-400 focus:outline-none"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Template body preview */}
+                  {selectedTemplate && (
+                    <div className="rounded bg-white/60 px-2 py-1.5 text-[10px] leading-relaxed text-foreground">
+                      {templateVars.length > 0
+                        ? previewBodyWithValues(selectedTemplate.body || "", templateVarValues)
+                        : selectedTemplate.body}
+                    </div>
+                  )}
+                </motion.div>
+              </div>
+            )}
+
             <div className="border-t border-border p-3">
               <div className="flex items-center gap-2 rounded-lg border border-border bg-secondary/30 px-3 py-2">
-                <button className="text-muted-foreground hover:text-foreground">
-                  <Smile className="h-4 w-4" />
+                <button
+                  onClick={() => {
+                    setShowTemplatePicker(!showTemplatePicker);
+                    if (showTemplatePicker) {
+                      setTemplateId("");
+                      setTemplateVarValues({});
+                    }
+                  }}
+                  className={`text-muted-foreground hover:text-foreground transition-colors ${showTemplatePicker ? "text-primary" : ""}`}
+                  title="Send a template message"
+                >
+                  <Smartphone className="h-4 w-4" />
                 </button>
                 <button className="text-muted-foreground hover:text-foreground">
                   <Paperclip className="h-4 w-4" />
@@ -292,14 +469,14 @@ export default function ChatInbox() {
                   value={msgInput}
                   onChange={(e) => setMsgInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleSend()}
-                  placeholder="Type a message..."
+                  placeholder={templateId ? "Template selected — click send" : "Type a message..."}
                   className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
-                  disabled={sending}
+                  disabled={sending || !!templateId}
                 />
                 <button
                   onClick={handleSend}
-                  disabled={!msgInput.trim() || sending}
-                  className="rounded-lg bg-primary p-2 text-primary-foreground hover:opacity-90 disabled:opacity-50"
+                  disabled={(!msgInput.trim() && !templateId) || sending}
+                  className="rounded-lg bg-primary p-2 text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-opacity"
                 >
                   {sending ? (
                     <Loader2 className="h-4 w-4 animate-spin" />

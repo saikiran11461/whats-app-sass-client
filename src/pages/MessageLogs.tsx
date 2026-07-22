@@ -17,8 +17,11 @@ import {
   FileText,
   Image,
 } from "lucide-react";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useMessages, useMessageStats } from "@/hooks/useMessages";
+import { useSocketEvent } from "@/hooks/useSocket";
+import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/api";
 import { Link } from "react-router-dom";
 
 const statusConfig: Record<string, { icon: typeof Check; color: string; label: string }> = {
@@ -35,6 +38,7 @@ export default function MessageLogs() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [showFilters, setShowFilters] = useState(false);
+  const queryClient = useQueryClient();
 
   const { data: messagesData, isLoading } = useMessages({
     limit: 100,
@@ -43,6 +47,27 @@ export default function MessageLogs() {
 
   const messages = messagesData?.messages || [];
   const pagination = messagesData?.pagination;
+
+  // Real-time: listen for new message status updates
+  useSocketEvent("message:status", (data: any) => {
+    // Update single message status in the cached data without full refetch
+    queryClient.invalidateQueries({ queryKey: queryKeys.messages.list({}) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.messages.stats });
+  });
+
+  // Real-time: listen for new incoming messages
+  useSocketEvent("message:new", (data: any) => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.messages.list({}) });
+    queryClient.invalidateQueries({ queryKey: queryKeys.messages.stats });
+  });
+
+  // Auto-refresh stats every 30 seconds as a fallback for missed socket events
+  useEffect(() => {
+    const interval = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.messages.stats });
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Filter messages by status
   const filteredMessages = useMemo(() => {

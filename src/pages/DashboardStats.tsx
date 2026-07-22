@@ -11,6 +11,9 @@ import {
 } from "lucide-react";
 import { useDashboardStats, useDashboardGrowth } from "@/hooks/useDashboard";
 import { useRecentActivity } from "@/hooks/useActivityLogs";
+import { useSocketEvent } from "@/hooks/useSocket";
+import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/api";
 
 const stagger = {
   hidden: {},
@@ -22,9 +25,34 @@ const fadeUp = {
 };
 
 export default function DashboardStats() {
+  const queryClient = useQueryClient();
   const { data: stats, isLoading: statsLoading } = useDashboardStats();
   const { data: growth } = useDashboardGrowth();
   const { data: recentActivity } = useRecentActivity(6);
+
+  // ── Real-time socket listeners for live dashboard updates ──
+
+  // When a new message arrives (from webhook), refresh stats immediately
+  useSocketEvent("message:new", () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard.stats });
+    queryClient.invalidateQueries({ queryKey: queryKeys.activityLogs.recent });
+  });
+
+  // When a message status changes (sent → delivered → read), refresh stats
+  useSocketEvent("message:status", () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard.stats });
+  });
+
+  // When a campaign completes, refresh stats
+  useSocketEvent("campaign:completed", () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard.stats });
+    queryClient.invalidateQueries({ queryKey: queryKeys.activityLogs.recent });
+  });
+
+  // When a template status updates (approved/rejected), refresh stats
+  useSocketEvent("template:status:update", () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.templates.all });
+  });
 
   const statCards = stats
     ? [

@@ -61,6 +61,12 @@ export default function Groups() {
   const [form, setForm] = useState<Partial<Group>>(emptyForm());
   const [deleting, setDeleting] = useState<Group | null>(null);
 
+  // Debounce search query for API calls
+  useEffect(() => {
+    const timer = setTimeout(() => setSearch(searchQuery), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
   const { data, isLoading } = useGroups({ search: search || undefined });
   const createGroup = useCreateGroup();
   const updateGroup = useUpdateGroup();
@@ -189,11 +195,7 @@ export default function Groups() {
           <input
             type="text"
             value={searchQuery}
-            onChange={(e) => {
-              setSearchQuery(e.target.value);
-              const timer = setTimeout(() => setSearch(e.target.value), 300);
-              return () => clearTimeout(timer);
-            }}
+            onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search groups..."
             className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
           />
@@ -547,42 +549,117 @@ function GroupMembersModal({
 
   /**
    * Parse a CSV string into contact objects.
-   * Accepts headers (name, phone, email) or bare values. One row per contact.
+   * Handles various customer upload formats:
+   *   - Just phone numbers (one per line, no header)
+   *   - phone,name pairs
+   *   - name,phone pairs
+   *   - Full CSV with headers: name, phone, email
+   *   - Tab-separated, semicolon-separated
    */
-  const parseCsvToContacts = (csv: string) => {
+  const parseCsvToContacts = (csv: string): { name?: string; phone: string; email?: string }[] => {
     const lines = csv
       .split(/\r?\n/)
       .map((l) => l.trim())
-      .filter(Boolean);
+      .filter((l) => l.length > 0);
     if (lines.length === 0) return [];
 
-    const splitRow = (row: string) =>
-      row
-        .split(/[,;]+/)
-        .map((cell) => cell.trim().replace(/^"|"$/g, ""))
-        .filter((c) => c.length > 0);
+    const splitRow = (row: string): string[] => {
+      // Try tab first
+      if (row.includes('\t')) {
+        return row.split('\t').map((c) => c.trim().replace(/^"|"$/g, ''));
+      }
+      // Comma or semicolon with quoted field support
+      const cells: string[] = [];
+      let cur = '';
+      let inQuotes = false;
+      for (let i = 0; i < row.length; i++) {
+        const ch = row[i];
+        if (inQuotes) {
+          if (ch === '"') {
+            if (row[i + 1] === '"') { cur += '"'; i++; } else inQuotes = false;
+          } else cur += ch;
+        } else if (ch === '"') {
+          inQuotes = true;
+        } else if (ch === ',' || ch === ';') {
+          cells.push(cur.trim()); cur = '';
+        } else {
+          cur += ch;
+        }
+      }
+      cells.push(cur.trim());
+      return cells.filter((c) => c.length > 0);
+    };
 
+    // Detect whether the first line is a header
+    const first = splitRow(lines[0]).map((c) => c.toLowerCase().replace(/['"]/g, ''));
+    
+    // Check if every line is a single phone number → bare-number list
+    if (lines.every((l) => { const c = splitRow(l); return c.length === 1 && /^[\d\s\-\+\(\)]+$/.test(c[0]) && c[0].replace(/[^\d]/g, '').length >= 5; })) {
+      return lines.map((line) => ({ phone: splitRow(line)[0].replace(/[^\d+]/g, '') }));
+    }
+
+    const hasHeader = first.some(
+      (c) => c.includes('phone') || c.includes('mobile') || c.includes('number') || c.includes('name') || c.includes('email')
+    );
+
+    let nameIdx = -1;
+    let phoneIdx = -1;
+    let emailIdx = -1;
     let startIndex = 0;
-    let cols = { name: 0, phone: 1, email: 2 };
 
-    const first = splitRow(lines[0]).map((c) => c.toLowerCase());
-    const hasHeader = first.some((c) => c.includes("phone") || c.includes("name") || c.includes("email"));
     if (hasHeader) {
-      cols = {
-        name: first.findIndex((c) => c.includes("name")),
-        phone: first.findIndex((c) => c.includes("phone")),
-        email: first.findIndex((c) => c.includes("email")),
-      };
+      nameIdx = first.findIndex((c) => c.includes('name') || c.includes('first') || c.includes('contact'));
+      phoneIdx = first.findIndex((c) => c.includes('phone') || c.includes('mobile') || c.includes('number') || c.includes('tel'));
+      emailIdx = first.findIndex((c) => c.includes('email') || c.includes('mail'));
       startIndex = 1;
+    } else if (splitRow(lines[0]).length >= 2) {
+      // No header, multiple cells — guess phone from digit ratio
+      const firstData = splitRow(lines[0]);
+      for (let c = 0; c < firstData.length; c++) {
+        const ratio = firstData[c].replace(/[^\d]/g, '').length / Math.max(firstData[c].length, 1);
+        if (ratio > 0.4 && phoneIdx === -1) phoneIdx = c;
+        else if (ratio <= 0.4 && nameIdx === -1) nameIdx = c;
+      }
+      if (phoneIdx === -1) phoneIdx = 0;
+      if (nameIdx === -1) nameIdx = firstData.length > 1 ? 1 : -1;
     }
 
     const contacts: { name?: string; phone: string; email?: string }[] = [];
     for (let i = startIndex; i < lines.length; i++) {
       const cells = splitRow(lines[i]);
-      const phone = (cols.phone >= 0 ? cells[cols.phone] : cells[1] || cells[0])?.replace(/[^\d+]/g, "");
+      if (cells.length === 0) continue;
+
+      let phone = '';
+      let name: string | undefined;
+      let email: string | undefined;
+
+      if (phoneIdx >= 0 && cells[phoneIdx]) {
+        phone = cells[phoneIdx].replace(/[^\d+]/g, '');
+      } else if (cells.length === 1) {
+        phone = cells[0].replace(/[^\d+]/g, '');
+      } else {
+        for (const cell of cells) {
+          const cleaned = cell.replace(/[^\d+]/g, '');
+          if (cleaned.length >= 5) { phone = cleaned; break; }
+        }
+        if (!phone) phone = cells[0].replace(/[^\d+]/g, '');
+      }
+
       if (!phone) continue;
-      const name = cols.name >= 0 ? cells[cols.name] : undefined;
-      const email = cols.email >= 0 ? cells[cols.email] : undefined;
+
+      if (nameIdx >= 0 && cells[nameIdx]) {
+        name = cells[nameIdx] || undefined;
+      } else if (phoneIdx >= 0) {
+        for (let c = 0; c < cells.length; c++) {
+          if (c !== phoneIdx && c !== emailIdx) {
+            const v = cells[c];
+            if (v && !/^[\d\s\-\+\(\)]+$/.test(v)) { name = v; break; }
+          }
+        }
+      }
+
+      if (emailIdx >= 0 && cells[emailIdx]) email = cells[emailIdx] || undefined;
+
       contacts.push({ name: name || undefined, phone, email: email || undefined });
     }
     return contacts;
@@ -660,9 +737,8 @@ function GroupMembersModal({
                     key={m._id}
                     className="flex items-center justify-between rounded-md px-2 py-1.5 hover:bg-secondary"
                   >
-                    <div className="min-w-0">
-                      <p className="truncate text-sm text-foreground">{m.name || "Unnamed"}</p>
-                      <p className="truncate text-xs text-muted-foreground">{m.phone}</p>
+                    <div className="min-w-0">                          <p className="truncate text-sm text-foreground">{m.name || m.phone || "Unnamed"}</p>
+                          <p className="truncate text-xs text-muted-foreground">{m.phone || '—'}</p>
                     </div>
                     <button
                       onClick={() => handleRemove(m._id)}

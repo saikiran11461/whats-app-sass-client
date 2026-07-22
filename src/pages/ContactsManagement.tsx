@@ -17,8 +17,10 @@ import { useState, useRef, useEffect } from "react";
 import {
   useContacts,
   useCreateContact,
+  useUpdateContact,
   useDeleteContact,
   useBulkImportContacts,
+  type Contact,
 } from "@/hooks/useContacts";
 import { toast } from "sonner";
 
@@ -47,10 +49,17 @@ export default function ContactsManagement() {
   const pagination = data?.pagination;
 
   const { mutate: createContact, isPending: creating } = useCreateContact();
-  const { mutate: deleteContact } = useDeleteContact();
+  const { mutate: updateContact, isPending: updating } = useUpdateContact();
+  const { mutate: deleteContact, isPending: deleting } = useDeleteContact();
   const { mutate: bulkImport, isPending: importing } = useBulkImportContacts();
   const [showAddModal, setShowAddModal] = useState(false);
   const [newContact, setNewContact] = useState({ name: "", phone: "", tags: "" });
+
+  // View / Edit / Delete modal state
+  const [viewingContact, setViewingContact] = useState<Contact | null>(null);
+  const [editingContact, setEditingContact] = useState<Contact | null>(null);
+  const [editForm, setEditForm] = useState({ name: "", phone: "", tags: "", email: "", notes: "" });
+  const [deletingContact, setDeletingContact] = useState<Contact | null>(null);
 
   // CSV import state
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -61,58 +70,175 @@ export default function ContactsManagement() {
   const [isDragging, setIsDragging] = useState(false);
 
   /**
-   * Parse a CSV string into contact objects.
-   * Supports an optional header row (name, phone, email, tags). One contact per row.
+   * Parse CSV (or plain-text) data into contact objects.
+   * Handles a wide variety of customer uploads:
+   *   - Just phone numbers (one per line, no header)
+   *   - phone,name pairs
+   *   - name,phone pairs
+   *   - Full CSV with headers: name, phone, email, tags
+   *   - Tab-separated, semicolon-separated
+   *   - Quoted fields with commas inside
    * Tags may be separated by | or / in a single cell.
    */
   const parseCsv = (text: string) => {
     const lines = text
       .split(/\r?\n/)
       .map((l) => l.trim())
-      .filter(Boolean);
+      .filter((l) => l.length > 0);
     if (lines.length === 0) return [];
 
-    const splitRow = (row: string) =>
-      row
-        .split(/[,;]+/)
-        .map((c) => c.trim().replace(/^"|"$/g, ""))
-        .filter((c) => c.length > 0);
+    // Split a row into cells: handles commas, tabs, semicolons, and quoted fields
+    const splitRow = (row: string): string[] => {
+      // Try tab first; if found, use tab as separator
+      if (row.includes('\t')) {
+        return row.split('\t').map((c) => c.trim().replace(/^"|"$/g, ''));
+      }
+      // Otherwise split by comma or semicolon, handling quoted fields
+      const cells: string[] = [];
+      let cur = '';
+      let inQuotes = false;
+      for (let i = 0; i < row.length; i++) {
+        const ch = row[i];
+        if (inQuotes) {
+          if (ch === '"') {
+            if (row[i + 1] === '"') { cur += '"'; i++; } else inQuotes = false;
+          } else {
+            cur += ch;
+          }
+        } else if (ch === '"') {
+          inQuotes = true;
+        } else if (ch === ',' || ch === ';') {
+          cells.push(cur.trim());
+          cur = '';
+        } else {
+          cur += ch;
+        }
+      }
+      cells.push(cur.trim());
+      return cells.filter((c) => c.length > 0);
+    };
 
-    let start = 0;
-    let cols = { name: 0, phone: 1, email: 2, tags: 3 };
+    // Try to detect whether the first line is a header row
+    const firstRow = splitRow(lines[0]);
+    const firstRowLower = firstRow.map((c) => c.toLowerCase().replace(/['"]/g, ''));
 
-    const first = splitRow(lines[0]).map((c) => c.toLowerCase());
-    const hasHeader = first.some(
-      (c) => c.includes("phone") || c.includes("name") || c.includes("email") || c.includes("tag")
+    const isLikelyHeader = firstRowLower.some(
+      (c) =>
+        c.includes('phone') ||
+        c.includes('mobile') ||
+        c.includes('number') ||
+        c.includes('name') ||
+        c.includes('email') ||
+        c.includes('tag') ||
+        c.includes('label') ||
+        c.includes('contact')
     );
-    if (hasHeader) {
-      cols = {
-        name: first.findIndex((c) => c.includes("name")),
-        phone: first.findIndex((c) => c.includes("phone")),
-        email: first.findIndex((c) => c.includes("email")),
-        tags: first.findIndex((c) => c.includes("tag")),
-      };
-      start = 1;
+
+    // If every line has exactly one cell that looks numeric, it's a bare-number list
+    if (lines.every((l) => { const c = splitRow(l); return c.length === 1 && /^[\d\s\-\+\(\)]+$/.test(c[0]) && c[0].replace(/[^\d]/g, '').length >= 5; })) {
+      return lines.map((line) => ({
+        phone: splitRow(line)[0].replace(/[^\d+]/g, ''),
+      }));
+    }
+
+    // Detect column indices from header or infer from data
+    let startRow = 0;
+    let nameIdx = -1;
+    let phoneIdx = -1;
+    let emailIdx = -1;
+    let tagsIdx = -1;
+
+    if (isLikelyHeader) {
+      nameIdx = firstRowLower.findIndex(
+        (c) => c.includes('name') || c.includes('first') || c.includes('contact')
+      );
+      phoneIdx = firstRowLower.findIndex(
+        (c) => c.includes('phone') || c.includes('mobile') || c.includes('number') || c.includes('tel')
+      );
+      emailIdx = firstRowLower.findIndex((c) => c.includes('email') || c.includes('mail'));
+      tagsIdx = firstRowLower.findIndex((c) => c.includes('tag') || c.includes('label'));
+      startRow = 1;
+    } else if (firstRow.length >= 2) {
+      // No header, but multiple cells per row — guess phone from cell content
+      // Assume the cell containing mostly digits is the phone
+      for (let c = 0; c < firstRow.length; c++) {
+        const digitRatio =
+          firstRow[c].replace(/[^\d]/g, '').length / Math.max(firstRow[c].length, 1);
+        if (digitRatio > 0.4 && phoneIdx === -1) {
+          phoneIdx = c;
+        } else if (digitRatio <= 0.4 && nameIdx === -1) {
+          nameIdx = c;
+        }
+      }
+      // Fallback: columns 0 and 1 are phone and name (or vice versa)
+      if (phoneIdx === -1) phoneIdx = 0;
+      if (nameIdx === -1) nameIdx = firstRow.length > 1 ? 1 : -1;
     }
 
     const out: { name?: string; phone: string; email?: string; tags?: string[] }[] = [];
-    for (let i = start; i < lines.length; i++) {
+    for (let i = startRow; i < lines.length; i++) {
       const cells = splitRow(lines[i]);
-      const phone = (cols.phone >= 0 ? cells[cols.phone] : cells[1] || cells[0])?.replace(
-        /[^\d+]/g,
-        ""
-      );
+      if (cells.length === 0) continue;
+
+      let phone = '';
+      let name: string | undefined;
+      let email: string | undefined;
+      let tags: string[] | undefined;
+
+      if (phoneIdx >= 0 && cells[phoneIdx]) {
+        phone = cells[phoneIdx].replace(/[^\d+]/g, '');
+      } else if (cells.length === 1) {
+        // Single cell — treat as phone number
+        phone = cells[0].replace(/[^\d+]/g, '');
+      } else {
+        // Try to find which cell looks like a phone
+        for (const cell of cells) {
+          const cleaned = cell.replace(/[^\d+]/g, '');
+          if (cleaned.length >= 5) {
+            phone = cleaned;
+            break;
+          }
+        }
+        // Fallback: first cell
+        if (!phone) phone = cells[0].replace(/[^\d+]/g, '');
+      }
+
       if (!phone) continue;
-      const name = cols.name >= 0 ? cells[cols.name] : undefined;
-      const email = cols.email >= 0 ? cells[cols.email] : undefined;
-      const tagsRaw = cols.tags >= 0 ? cells[cols.tags] : undefined;
-      const tags = tagsRaw
-        ? tagsRaw
-            .split(/[|/]/)
-            .map((t) => t.trim())
-            .filter(Boolean)
-        : undefined;
-      out.push({ name: name || undefined, phone, email: email || undefined, tags });
+
+      if (nameIdx >= 0 && cells[nameIdx]) {
+        name = cells[nameIdx] || undefined;
+      } else if (phoneIdx >= 0) {
+        // For cells with name/phone pair, name is in a different column
+        for (let c = 0; c < cells.length; c++) {
+          if (c !== phoneIdx && c !== emailIdx && c !== tagsIdx) {
+            const v = cells[c];
+            if (v && !/^[\d\s\-\+\(\)]+$/.test(v)) {
+              name = v;
+              break;
+            }
+          }
+        }
+      }
+
+      if (emailIdx >= 0 && cells[emailIdx]) {
+        email = cells[emailIdx] || undefined;
+      }
+
+      if (tagsIdx >= 0 && cells[tagsIdx]) {
+        const raw = cells[tagsIdx];
+        tags = raw
+          .split(/[|/,;]+/)
+          .map((t) => t.trim())
+          .filter(Boolean);
+        if (tags.length === 0) tags = undefined;
+      }
+
+      out.push({
+        name: name || undefined,
+        phone,
+        email: email || undefined,
+        tags,
+      });
     }
     return out;
   };
@@ -180,21 +306,387 @@ export default function ContactsManagement() {
     );
   };
 
-  const handleDelete = (id: string) => {
-    if (confirm("Are you sure you want to delete this contact?")) {
-      deleteContact(id, {
-        onSuccess: () => toast.success("Contact deleted"),
-        onError: (err: any) => toast.error(err?.response?.data?.message || "Delete failed"),
-      });
+  const handleOpenView = (contact: Contact) => {
+    setViewingContact(contact);
+  };
+
+  const handleOpenEdit = (contact: Contact) => {
+    setEditingContact(contact);
+    setEditForm({
+      name: contact.name || "",
+      phone: contact.phone || "",
+      tags: (contact.tags || []).join(", "),
+      email: contact.email || "",
+      notes: contact.notes || "",
+    });
+  };
+
+  const handleEditSave = () => {
+    if (!editingContact) return;
+    if (!editForm.name.trim() || !editForm.phone.trim()) {
+      toast.error("Name and phone are required");
+      return;
     }
+    updateContact(
+      {
+        id: editingContact._id,
+        data: {
+          name: editForm.name,
+          phone: editForm.phone,
+          email: editForm.email || undefined,
+          notes: editForm.notes || undefined,
+          tags: editForm.tags
+            ? editForm.tags.split(",").map((t) => t.trim()).filter(Boolean)
+            : [],
+        },
+      },
+      {
+        onSuccess: () => {
+          toast.success("Contact updated!");
+          setEditingContact(null);
+        },
+        onError: (err: any) => {
+          toast.error(err?.response?.data?.message || "Failed to update contact");
+        },
+      }
+    );
+  };
+
+  const handleOpenDelete = (contact: Contact) => {
+    setDeletingContact(contact);
+  };
+
+  const handleConfirmDelete = () => {
+    if (!deletingContact) return;
+    deleteContact(deletingContact._id, {
+      onSuccess: () => {
+        toast.success("Contact deleted");
+        setDeletingContact(null);
+      },
+      onError: (err: any) => {
+        toast.error(err?.response?.data?.message || "Delete failed");
+        setDeletingContact(null);
+      },
+    });
   };
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="space-y-6"
-    >
+    <>
+      {/* View Contact Modal */}
+      <AnimatePresence>
+        {viewingContact && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+            onClick={() => setViewingContact(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="w-full max-w-md rounded-xl glass-card stat-card-glow p-6 space-y-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+                    {viewingContact.name
+                      ? viewingContact.name.split(" ").map((n) => n[0]).join("")
+                      : viewingContact.phone?.replace(/[^\d]/g, "").slice(0, 2) || "?"}
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-foreground">
+                      {viewingContact.name || viewingContact.phone || "Unknown"}
+                    </h3>
+                    <p className="text-xs text-muted-foreground">Contact Details</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setViewingContact(null)}
+                  className="text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-lg bg-secondary/30 p-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      Phone
+                    </p>
+                    <p className="mt-1 text-sm font-medium text-foreground tabular-nums">
+                      {viewingContact.phone || "—"}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-secondary/30 p-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      Email
+                    </p>
+                    <p className="mt-1 text-sm font-medium text-foreground">
+                      {viewingContact.email || "—"}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="rounded-lg bg-secondary/30 p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Tags
+                  </p>
+                  <div className="mt-1 flex flex-wrap gap-1.5">
+                    {viewingContact.tags && viewingContact.tags.length > 0 ? (
+                      viewingContact.tags.map((t) => (
+                        <span
+                          key={t}
+                          className={`rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                            t === "VIP"
+                              ? "bg-primary/10 text-primary"
+                              : t === "Partner"
+                                ? "bg-indigo/10 text-indigo"
+                                : "bg-secondary text-muted-foreground"
+                          }`}
+                        >
+                          {t}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-sm text-muted-foreground">No tags</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-lg bg-secondary/30 p-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Notes
+                  </p>
+                  <p className="mt-1 text-sm text-foreground">
+                    {viewingContact.notes || "No notes"}
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-lg bg-secondary/30 p-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      Status
+                    </p>
+                    <span
+                      className={`mt-1 inline-block rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                        viewingContact.status === "active"
+                          ? "bg-primary/10 text-primary"
+                          : viewingContact.status === "blocked"
+                            ? "bg-destructive/10 text-destructive"
+                            : "bg-secondary text-muted-foreground"
+                      }`}
+                    >
+                      {viewingContact.status}
+                    </span>
+                  </div>
+                  <div className="rounded-lg bg-secondary/30 p-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      Messages
+                    </p>
+                    <p className="mt-1 text-sm font-medium text-foreground tabular-nums">
+                      {viewingContact.totalMessages}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-lg bg-secondary/30 p-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      Created
+                    </p>
+                    <p className="mt-1 text-sm text-foreground">
+                      {formatTimeAgo(viewingContact.createdAt)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg bg-secondary/30 p-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      Last Active
+                    </p>
+                    <p className="mt-1 text-sm text-foreground">
+                      {viewingContact.lastMessageAt
+                        ? formatTimeAgo(viewingContact.lastMessageAt)
+                        : "Never"}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setViewingContact(null)}
+                className="w-full rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+              >
+                Close
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Edit Contact Modal */}
+      <AnimatePresence>
+        {editingContact && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+            onClick={() => setEditingContact(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="w-full max-w-md rounded-xl glass-card stat-card-glow p-6 space-y-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-foreground">
+                  Edit Contact
+                </h3>
+                <button
+                  onClick={() => setEditingContact(null)}
+                  className="text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                <input
+                  type="text"
+                  placeholder="Name"
+                  value={editForm.name}
+                  onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                  className="w-full rounded-lg border border-border bg-secondary/50 px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/30"
+                />
+                <input
+                  type="text"
+                  placeholder="Phone"
+                  value={editForm.phone}
+                  onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+                  className="w-full rounded-lg border border-border bg-secondary/50 px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/30"
+                />
+                <input
+                  type="email"
+                  placeholder="Email (optional)"
+                  value={editForm.email}
+                  onChange={(e) => setEditForm({ ...editForm, email: e.target.value })}
+                  className="w-full rounded-lg border border-border bg-secondary/50 px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/30"
+                />
+                <input
+                  type="text"
+                  placeholder="Tags (comma separated)"
+                  value={editForm.tags}
+                  onChange={(e) => setEditForm({ ...editForm, tags: e.target.value })}
+                  className="w-full rounded-lg border border-border bg-secondary/50 px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/30"
+                />
+                <textarea
+                  placeholder="Notes (optional)"
+                  value={editForm.notes}
+                  onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                  rows={3}
+                  className="w-full rounded-lg border border-border bg-secondary/50 px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary/30 resize-none"
+                />
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setEditingContact(null)}
+                  className="flex-1 rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-secondary transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleEditSave}
+                  disabled={updating}
+                  className="flex-1 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50 transition-all"
+                >
+                  {updating ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Saving...
+                    </span>
+                  ) : (
+                    "Save Changes"
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Delete Confirmation Modal */}
+      <AnimatePresence>
+        {deletingContact && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+            onClick={() => setDeletingContact(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="w-full max-w-sm rounded-xl glass-card stat-card-glow p-6 space-y-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-destructive/10">
+                  <Trash2 className="h-5 w-5 text-destructive" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground">Delete Contact</h3>
+                  <p className="text-xs text-muted-foreground">This action cannot be undone</p>
+                </div>
+              </div>
+
+              <p className="text-sm text-muted-foreground">
+                Are you sure you want to delete{" "}
+                <span className="font-medium text-foreground">
+                  {deletingContact.name || deletingContact.phone || "this contact"}
+                </span>
+                ?
+              </p>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setDeletingContact(null)}
+                  className="flex-1 rounded-lg border border-border px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-secondary transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleConfirmDelete}
+                  disabled={deleting}
+                  className="flex-1 rounded-lg bg-destructive px-4 py-2 text-sm font-semibold text-destructive-foreground hover:opacity-90 disabled:opacity-50 transition-all"
+                >
+                  {deleting ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Deleting...
+                    </span>
+                  ) : (
+                    "Delete"
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="space-y-6"
+      >
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">
@@ -447,17 +939,19 @@ export default function ContactsManagement() {
                       <div className="flex items-center gap-3">
                         <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
                           {c.name
-                            .split(" ")
-                            .map((n) => n[0])
-                            .join("")}
+                            ? c.name
+                                .split(" ")
+                                .map((n) => n[0])
+                                .join("")
+                            : c.phone?.replace(/[^\d]/g, '').slice(0, 2) || '?'}
                         </div>
                         <span className="text-sm font-medium text-foreground">
-                          {c.name}
+                          {c.name || c.phone || 'Unknown'}
                         </span>
                       </div>
                     </td>
                     <td className="px-5 py-3.5 text-sm tabular-nums text-muted-foreground">
-                      {c.phone}
+                      {c.phone || '—'}
                     </td>
                     <td className="px-5 py-3.5">
                       <div className="flex gap-1.5">
@@ -482,19 +976,21 @@ export default function ContactsManagement() {
                     <td className="px-5 py-3.5">
                       <div className="flex items-center gap-1">
                         <button
+                          onClick={() => handleOpenView(c)}
                           className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
                           title="View"
                         >
                           <Eye className="h-3.5 w-3.5" />
                         </button>
                         <button
+                          onClick={() => handleOpenEdit(c)}
                           className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
                           title="Edit"
                         >
                           <Edit className="h-3.5 w-3.5" />
                         </button>
                         <button
-                          onClick={() => handleDelete(c._id)}
+                          onClick={() => handleOpenDelete(c)}
                           className="rounded-md p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
                           title="Delete"
                         >
@@ -565,6 +1061,7 @@ export default function ContactsManagement() {
         )}
       </div>
     </motion.div>
+    </>
   );
 }
 

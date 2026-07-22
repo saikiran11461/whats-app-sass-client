@@ -8,8 +8,11 @@ import {
   X,
   Check,
   AlertCircle,
+  Variable,
+  Smartphone,
+  Eye,
 } from "lucide-react";
-import { useState, useRef } from "react";
+import { useState, useRef, useMemo } from "react";
 import { useSendMessage } from "@/hooks/useMessages";
 import { useTemplates } from "@/hooks/useTemplates";
 import { useUploadFile } from "@/hooks/useUploads";
@@ -18,6 +21,8 @@ import { toast } from "sonner";
 
 type MediaType = "image" | "document" | "video" | "audio";
 
+import { extractTemplateVariables, previewBodyWithValues, buildTemplateComponents } from "@/lib/template-utils";
+
 export default function SendMessage() {
   const [phone, setPhone] = useState("");
   const [templateId, setTemplateId] = useState("");
@@ -25,6 +30,8 @@ export default function SendMessage() {
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [mediaPreview, setMediaPreview] = useState<string | null>(null);
   const [mediaType, setMediaType] = useState<MediaType>("image");
+  const [templateVarValues, setTemplateVarValues] = useState<Record<string, string>>({});
+  const [showPreview, setShowPreview] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { mutate: sendMessage, isPending: sending } = useSendMessage();
@@ -33,6 +40,30 @@ export default function SendMessage() {
   const { data: contactsData } = useContacts({ limit: 100 });
   const contacts = contactsData?.contacts || [];
   const templates = templatesData?.templates || [];
+
+  // Selected template object
+  const selectedTemplate = useMemo(
+    () => templates.find((t: any) => t._id === templateId),
+    [templateId, templates]
+  );
+
+  // Extract variables from the selected template body
+  const templateVars = useMemo(
+    () => (selectedTemplate ? extractTemplateVariables(selectedTemplate.body || "") : []),
+    [selectedTemplate]
+  );
+
+  // Reset variable values when template changes
+  const handleTemplateChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newId = e.target.value;
+    setTemplateId(newId);
+    setTemplateVarValues({});
+    if (newId) setShowPreview(true);
+  };
+
+  const handleVarChange = (num: string, value: string) => {
+    setTemplateVarValues((prev) => ({ ...prev, [num]: value }));
+  };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -82,6 +113,17 @@ export default function SendMessage() {
       return;
     }
 
+    // Validate template variables if a template is selected
+    if (templateId && selectedTemplate) {
+      if (templateVars.length > 0) {
+        const missing = templateVars.filter((v) => !templateVarValues[String(v)]?.trim());
+        if (missing.length > 0) {
+          toast.error(`Please fill in all template variables (missing: {{${missing.join(", ")}}})`);
+          return;
+        }
+      }
+    }
+
     try {
       // Upload media first if present
       let mediaUrl: string | undefined;
@@ -95,12 +137,22 @@ export default function SendMessage() {
         (c) => c.phone === phone.replace(/\s/g, "")
       );
 
+      // Build template components array with variable values (like WATI/Respond.io)
+      // Meta API expects components as: [{ type: 'body', parameters: [{ type: 'text', text: 'value' }] }]
+      const templateComponents = templateId && templateVars.length > 0
+        ? buildTemplateComponents(templateVarValues)
+        : [];
+
       const payload: any = {
         phone: phone.replace(/\s/g, ""),
         contactId: existingContact?._id || "new",
         contactName: existingContact?.name || phone.replace(/\s/g, ""),
         content: message.trim() || undefined,
         templateId: templateId || undefined,
+        templateName: selectedTemplate?.name || undefined,
+        templateVariables: templateVarValues,
+        templateComponents: templateComponents,
+        messageType: templateId ? "template" : mediaUrl ? mediaType : "text",
       };
 
       if (mediaUrl) {
@@ -114,7 +166,9 @@ export default function SendMessage() {
           setPhone("");
           setMessage("");
           setTemplateId("");
+          setTemplateVarValues({});
           clearMedia();
+          setShowPreview(false);
         },
         onError: (err: any) => {
           toast.error(err?.response?.data?.message || "Failed to send message");
@@ -177,14 +231,14 @@ export default function SendMessage() {
           )}
         </div>
 
-        {/* Template Selection */}
+        {/* Template Selection — like WATI/Interakt/Respond.io */}
         <div className="space-y-2">
           <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Template (Optional)
           </label>
           <select
             value={templateId}
-            onChange={(e) => setTemplateId(e.target.value)}
+            onChange={handleTemplateChange}
             className="w-full rounded-lg border border-border bg-secondary/50 px-4 py-2.5 text-sm text-foreground focus:border-primary/50 focus:outline-none"
           >
             <option value="">Select a template...</option>
@@ -193,28 +247,106 @@ export default function SendMessage() {
                 No templates available — create one on Templates page
               </option>
             )}
-            {templates.map((t: any) => (
-              <option key={t._id} value={t._id}>
-                {t.name}{t.language ? ` (${t.language})` : ""}
-                {t.status !== "approved" ? ` — ${t.status}` : ""}
-              </option>
+            {templates
+              .filter((t: any) => t.status === "approved" || t.status === "pending")
+              .map((t: any) => (
+                <option key={t._id} value={t._id}>
+                  {t.name}{t.language ? ` (${t.language})` : ""}
+                  {t.status === "pending" ? " — PENDING" : ""}
+                  {t.status === "rejected" ? " — REJECTED" : ""}
+                </option>
             ))}
           </select>
-          {templateId && (
-            <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2">
-              <p className="flex items-center gap-1.5 text-xs text-primary">
-                <Check className="h-3 w-3" />
-                Template selected — message body will use template content
-              </p>
-              {templates.find((t: any) => t._id === templateId)?.body && (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {
-                    templates.find((t: any) => t._id === templateId)
-                      ?.body
-                  }
+
+          {/* Template selected — show body preview, variables, and approval status */}
+          {templateId && selectedTemplate && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              className="overflow-hidden rounded-lg border border-primary/20 bg-primary/5"
+            >
+              {/* Template info header */}
+              <div className="flex items-center justify-between border-b border-primary/10 px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <Smartphone className="h-3.5 w-3.5 text-primary" />
+                  <span className="text-xs font-semibold text-primary">{selectedTemplate.name}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {selectedTemplate.status === "approved" ? (
+                    <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[9px] font-semibold text-primary uppercase tracking-wider">
+                      Approved
+                    </span>
+                  ) : selectedTemplate.status === "pending" ? (
+                    <span className="rounded-full bg-amber/10 px-2 py-0.5 text-[9px] font-semibold text-amber uppercase tracking-wider">
+                      Pending
+                    </span>
+                  ) : (
+                    <span className="rounded-full bg-destructive/10 px-2 py-0.5 text-[9px] font-semibold text-destructive uppercase tracking-wider">
+                      {selectedTemplate.status}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => setShowPreview(!showPreview)}
+                    className="text-muted-foreground hover:text-foreground transition-colors"
+                    title="Toggle preview"
+                  >
+                    <Eye className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Live preview of body with filled variables */}
+              <div className="px-3 py-2">
+                <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground mb-1">
+                  Message Preview
                 </p>
+                <div className="rounded-lg bg-white/60 px-3 py-2 text-xs leading-relaxed text-foreground">
+                  {showPreview
+                    ? previewBodyWithValues(selectedTemplate.body || "", templateVarValues)
+                    : selectedTemplate.body || ""}
+                </div>
+                {selectedTemplate.footer && (
+                  <p className="mt-1 text-[10px] text-muted-foreground italic">
+                    Footer: {selectedTemplate.footer}
+                  </p>
+                )}
+              </div>
+
+              {/* Variable inputs — like WATI/Interakt variable editor */}
+              {templateVars.length > 0 && (
+                <div className="border-t border-primary/10 px-3 py-2 space-y-2">
+                  <div className="flex items-center gap-1.5">
+                    <Variable className="h-3 w-3 text-amber" />
+                    <span className="text-[10px] font-medium uppercase tracking-wider text-amber">
+                      Template Variables
+                    </span>
+                    <span className="text-[9px] text-muted-foreground">
+                      ({Object.values(templateVarValues).filter(Boolean).length}/{templateVars.length} filled)
+                    </span>
+                  </div>
+                  {templateVars.map((v) => (
+                    <div key={v} className="flex items-center gap-2">
+                      <span className="w-8 shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-center text-[10px] font-bold text-amber-700">
+                        {`{{${v}}}`}
+                      </span>
+                      <input
+                        type="text"
+                        value={templateVarValues[String(v)] || ""}
+                        onChange={(e) => handleVarChange(String(v), e.target.value)}
+                        placeholder={`Enter value for variable ${v}...`}
+                        className="flex-1 rounded-md border border-amber-200 bg-white px-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:border-amber-400 focus:outline-none focus:ring-1 focus:ring-amber-300"
+                      />
+                      <span className="text-[9px] text-muted-foreground tabular-nums">
+                        {(templateVarValues[String(v)] || "").length}
+                      </span>
+                    </div>
+                  ))}
+                  <p className="text-[9px] text-muted-foreground italic">
+                    Fill in the variables above to personalize the message for each recipient.
+                  </p>
+                </div>
               )}
-            </div>
+            </motion.div>
           )}
         </div>
 
